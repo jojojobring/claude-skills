@@ -193,6 +193,12 @@ useSuspenseQuery({ queryKey: ['user', id], queryFn: fetchUser, enabled: !!id });
 - [ ] useMemo/useCallback paired with React.memo
 - [ ] No component definitions inside components
 - [ ] Props to memo components are stable references
+- [ ] Callbacks in useEffect deps are stable (useCallback) — unstable inline arrows cause teardown/re-add churn
+- [ ] No expensive computations inline in JSX (`.filter()`, `.sort()`, `.reverse()`, `.map().filter()` — use useMemo)
+- [ ] Hardcoded DOM IDs in reusable components use `useId()` to avoid collisions (SVG `<defs>`, `htmlFor`, `aria-describedby`)
+- [ ] Modals have focus trap + Escape key handler (not just `aria-modal="true"`)
+- [ ] Interactive non-button elements (`<tr>`, `<div>`, `<span>` with onClick) have `tabIndex={0}`, `role`, `onKeyDown`
+- [ ] Loading spinners/skeletons have `role="status"` and `aria-label`
 - [ ] List items have unique, stable keys (not index)
 - [ ] Server Components don't use client APIs
 - [ ] Tests use `screen` queries and `userEvent`, not `container` and `fireEvent`
@@ -221,6 +227,25 @@ funcs = [lambda: i for i in range(5)]
 
 # GOOD
 funcs = [lambda i=i: i for i in range(5)]
+```
+
+### ORM Write Path
+```python
+# BAD — flush without commit (data silently rolls back on session close)
+db.add(record)
+await db.flush()
+# session closes → record lost
+
+# GOOD — always commit after flush
+db.add(record)
+await db.flush()
+await db.commit()
+
+# BAD — delete without commit
+await db.delete(record)
+# GOOD
+await db.delete(record)
+await db.commit()
 ```
 
 ### Async Python
@@ -262,14 +287,24 @@ async def handler():
 - [ ] Inconsistent resource naming
 - [ ] Wrong HTTP methods (POST for idempotent operations)
 - [ ] Missing pagination for list endpoints
+- [ ] Pagination `offset` parameter unbounded (add `le=` max to prevent large skip scans)
 - [ ] Incorrect status codes
 - [ ] Missing rate limiting
+- [ ] Missing `response_model` on endpoints (no response validation or OpenAPI docs)
+
+### Frontend/Backend Contract Alignment
+- [ ] Response field names match (e.g., backend returns `rows` but frontend expects `customers`)
+- [ ] Response nesting matches (backend returns flat list but frontend expects `{data: [...], has_more: bool}`)
+- [ ] Query param values match backend validation (e.g., `'shipped'` vs `'mtd_shipped'`)
+- [ ] HTTP methods match (GET vs POST)
+- [ ] Error response shapes handled by frontend
 
 ### Data Validation
 - [ ] Missing input validation
-- [ ] Missing length/range checks
+- [ ] Missing length/range checks on string fields (especially those sent to external APIs like LLMs)
 - [ ] Not sanitizing user input
 - [ ] Trusting client-side validation only
+- [ ] Email fields accept any string (use EmailStr or equivalent)
 
 ---
 

@@ -55,6 +55,8 @@ git diff $(git merge-base HEAD main)..HEAD --name-only
 find . -name "*.py" -o -name "*.ts" -o -name "*.tsx" -o -name "*.js" | head -50
 ```
 
+**CRITICAL — Full codebase reviews:** When the user asks for a "full review" or "review the entire codebase," do NOT scope agents to only the recently-changed app. Enumerate ALL source directories (e.g., core/, apps/expenses/, apps/analytics/, apps/projects/) and ensure every directory is assigned to at least one review agent. Split agents by app/area, not by review dimension. A "full codebase review" that only covers one app is a false sense of security.
+
 **Classify each file by risk:**
 - **HIGH**: Auth, crypto, payments, external calls, validation, data access, secrets
 - **MEDIUM**: Business logic, state changes, new APIs, configuration
@@ -72,14 +74,16 @@ For each changed/reviewed file, identify:
 
 ### Step 3: Review Passes
 
-Run these passes in order. For Quick Triage, do passes 1-3. For Standard, do 1-5. For Deep Audit, do all.
+Run these passes in order. For Quick Triage, do passes 1-3. For Standard, do 1-6. For Deep Audit, do all.
 
-**Pass 1: Security** (see [security-patterns.md](references/security-patterns.md))
-**Pass 2: Correctness & Bugs** (see [common-bugs.md](references/common-bugs.md))
-**Pass 3: Code Quality**
-**Pass 4: Performance** (see [performance-guide.md](references/performance-guide.md))
-**Pass 5: Architecture** (see [architecture-guide.md](references/architecture-guide.md))
-**Pass 6: Adversarial Analysis** (see [adversarial-analysis.md](references/adversarial-analysis.md))
+**Pass 1: Architecture** (see [architecture-guide.md](references/architecture-guide.md)) — understand the system first
+**Pass 2: Security** (see [security-patterns.md](references/security-patterns.md)) — highest-stakes, before reviewer fatigue
+**Pass 3: Correctness & Bugs** (see [common-bugs.md](references/common-bugs.md)) — does it work?
+**Pass 4: Infrastructure Compatibility** (see [infrastructure-compatibility.md](references/infrastructure-compatibility.md)) — will it work in production?
+**Pass 5: Performance** (see [performance-guide.md](references/performance-guide.md)) — does it work efficiently?
+**Pass 6: Refactoring & Code Smells** (see [refactoring-guide.md](references/refactoring-guide.md)) — is it maintainable?
+**Pass 7: Code Quality** — naming, style, comments, polish
+**Pass 8: Adversarial Analysis** (see [adversarial-analysis.md](references/adversarial-analysis.md)) — red team pass with full context
 
 ### Step 4: Verify & Report
 
@@ -186,7 +190,7 @@ secrets.token_hex(16)                   # SAFE (security token)
 
 ### Security Checklist (Every File)
 
-- [ ] **Injection**: SQL, command, template, header injection
+- [ ] **Injection**: SQL values AND identifiers (column/table names in f-strings), command, template, header injection
 - [ ] **XSS**: All outputs in templates properly escaped?
 - [ ] **Authentication**: Auth checks on all protected operations?
 - [ ] **Authorization/IDOR**: Access control verified, not just auth?
@@ -196,6 +200,8 @@ secrets.token_hex(16)                   # SAFE (security token)
 - [ ] **Information disclosure**: Error messages, logs, timing attacks?
 - [ ] **DoS**: Unbounded operations, missing rate limits, resource exhaustion?
 - [ ] **Business logic**: Edge cases, state machine violations, numeric overflow?
+- [ ] **LLM/AI security**: User input in prompts sanitized? Output HTML sanitized before render? Token cost abuse prevented?
+- [ ] **ORM write path**: Every `db.add()`/`db.flush()` followed by `db.commit()`? Session auto-commit off?
 
 ---
 
@@ -218,13 +224,60 @@ secrets.token_hex(16)                   # SAFE (security token)
 
 - [ ] No N+1 queries (use select_related/prefetch_related/eager loading)
 - [ ] No `SELECT *` on large tables
-- [ ] List endpoints have pagination with max limit
+- [ ] List endpoints have pagination with max limit AND max offset (both `limit` and `offset` bounded)
 - [ ] No O(n^2) or worse nested loops on unbounded data
 - [ ] Large lists use virtual scrolling (>100 items)
 - [ ] Event listeners/timers cleaned up on component unmount
-- [ ] No memory leaks (closures holding large objects, unclosed connections)
+- [ ] No memory leaks (closures holding large objects, unclosed connections, growing dicts/maps without eviction)
 - [ ] Hot paths have caching where appropriate
 - [ ] No blocking I/O on async event loops
+- [ ] DB connection configured for pooler compatibility (statement caching disabled if behind pgbouncer/supavisor)
+- [ ] No expensive computed values inline in JSX render body (`.filter()`, `.map()`, `.reverse()`, `.sort()` — use `useMemo`)
+- [ ] Callbacks passed to components with `useEffect` deps are stable (`useCallback`) — not just for `React.memo`
+
+---
+
+## Infrastructure Compatibility Quick Check
+
+- [ ] `jwt.decode()` calls include `leeway` parameter (clock skew tolerance)
+- [ ] `jwt.decode()` calls specify explicit `algorithms=` (never derived from token)
+- [ ] DB driver configured for connection pooler mode (prepared statements disabled)
+- [ ] ORM enum types match actual DB column types (native vs VARCHAR)
+- [ ] Model changes paired with migration files (no drift)
+- [ ] No session-state SQL features behind transaction-mode poolers (`SET`, `LISTEN`, advisory locks)
+- [ ] Distributed locks (advisory locks, mutexes) held for the full duration of the protected work — not released early by session/transaction close
+
+---
+
+## API Contract Alignment (Full-Stack Apps)
+
+When reviewing apps with separate frontend and backend:
+
+- [ ] **Response shapes match**: Compare each frontend API function's expected return type against the backend endpoint's actual response. Check field names, nesting, and nullability.
+- [ ] **Query parameter names match**: Frontend params (`sort_by`, `limit`) match backend `Query()` parameter names exactly.
+- [ ] **Allowed values match**: Frontend-sent enum/string values (e.g., `'shipped'`) are in the backend's validation regex/allowlist.
+- [ ] **HTTP methods match**: Frontend uses correct verb (GET/POST/PUT/DELETE) for each endpoint.
+- [ ] **Error shapes handled**: Frontend handles 4xx/5xx error response shapes from backend (not just success).
+- [ ] **Pydantic `response_model` present**: Backend endpoints that return data have `response_model=` for validation and OpenAPI docs.
+
+---
+
+## Accessibility Quick Check
+
+- [ ] **Modals**: `role="dialog"` + `aria-modal="true"` paired with actual focus trap and Escape key handler
+- [ ] **Interactive non-button elements**: `<div>`, `<tr>`, `<span>` with `onClick` also have `tabIndex={0}`, `role="button"`, and `onKeyDown` (Enter/Space)
+- [ ] **Loading states**: Spinners/skeletons have `role="status"` and `aria-label`
+- [ ] **Form inputs**: All inputs have associated `<label>` or `aria-label`
+- [ ] **Color contrast**: Text meets WCAG AA (4.5:1 for normal, 3:1 for large)
+- [ ] **Focus indicators**: Interactive elements have visible focus ring (not just `outline: none`)
+- [ ] **Screen reader announcements**: Dynamic content changes use `aria-live` regions
+
+---
+
+## Reusable Component Checks
+
+- [ ] **No hardcoded DOM IDs**: SVG `<defs>` IDs, `htmlFor`, `aria-describedby` use `useId()` or prop-based prefixes to avoid collisions when component is rendered multiple times
+- [ ] **Visualization correctness**: Color coding matches business semantics (green = good, red = bad — verify the math, not just the style)
 
 ---
 
@@ -362,4 +415,6 @@ grep -r "functionName(" --include="*.py" --include="*.ts" . | wc -l
 | [performance-guide.md](references/performance-guide.md) | Frontend (Core Web Vitals), backend, DB, algorithms |
 | [architecture-guide.md](references/architecture-guide.md) | SOLID, anti-patterns, coupling, layered architecture |
 | [adversarial-analysis.md](references/adversarial-analysis.md) | Attacker modeling, exploit scenarios, exploitability rating |
+| [infrastructure-compatibility.md](references/infrastructure-compatibility.md) | DB pooler compat, JWT provider pitfalls, ORM schema drift |
+| [refactoring-guide.md](references/refactoring-guide.md) | Code smells, duplication, complexity, React/Python/TS patterns |
 | [reporting.md](references/reporting.md) | Report templates, formatting, file naming |
